@@ -84,8 +84,6 @@ export function PsdScope({ res, theme }: { res: LinkResult; theme: Theme }) {
 
   return (
     <Scope
-      title="Power spectral density"
-      subtitle="transmitted vs received"
       readout={readout}
       legend={
         <>

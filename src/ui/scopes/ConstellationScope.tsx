@@ -77,7 +77,7 @@ export function ConstellationScope({ res, theme }: { res: LinkResult; theme: The
     ctx.restore();
   };
 
-  let readout = `${res.rxSym.re.length} symbols · dashed lines = decision boundaries`;
+  let readout = `${res.rxSym.re.length} payload symbols after the receiver · dashed: decision boundaries`;
   if (hover) {
     const { r, sx, sy } = layout(hover.w, hover.h, R);
     if (hover.x >= r.x && hover.x <= r.x + r.w && hover.y >= r.y && hover.y <= r.y + r.h) {
@@ -88,7 +88,7 @@ export function ConstellationScope({ res, theme }: { res: LinkResult; theme: The
   }
 
   return (
-    <Scope title="Constellation" subtitle={`${c.label}, Gray coded, Es = 1`} readout={readout}>
+    <Scope readout={readout}>
       <CanvasPlot
         draw={draw}
         deps={[res, theme]}

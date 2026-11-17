@@ -69,7 +69,7 @@ export function EyeScope({ res, theme }: { res: LinkResult; theme: Theme }) {
     ctx.restore();
   };
 
-  let readout = `${res.eye.length} traces · matched-filter output, ${sps} samples/symbol`;
+  let readout = `${res.eye.length} traces · ${sps} samples/symbol · RRC β = ${res.params.beta.toFixed(2)}`;
   if (hover) {
     const { r, sx, sy } = layout(hover.w, hover.h, Y);
     if (hover.x >= r.x && hover.x <= r.x + r.w && hover.y >= r.y && hover.y <= r.y + r.h) {
@@ -80,7 +80,7 @@ export function EyeScope({ res, theme }: { res: LinkResult; theme: Theme }) {
   }
 
   return (
-    <Scope title="Eye diagram" subtitle={`RRC β = ${res.params.beta.toFixed(2)} → raised-cosine overall`} readout={readout}>
+    <Scope subtitle="Matched-filter output (I), before timing and carrier recovery" readout={readout}>
       <CanvasPlot draw={draw} deps={[res, theme]} label="Eye diagram of the matched filter output" onHover={setHover} />
     </Scope>
   );

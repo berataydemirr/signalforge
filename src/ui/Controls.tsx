@@ -1,53 +1,75 @@
+import type { ReactNode } from 'react';
 import { MODULATIONS } from '../dsp/modulation/constellation';
+import { Impairments, NO_IMPAIRMENTS } from '../dsp/channel/impairments';
 import type { LinkParams } from '../engine/link';
-
-export interface Preset {
-  title: string;
-  text: string;
-  params: Partial<LinkParams>;
-}
-
-export const PRESETS: Preset[] = [
-  {
-    title: 'Gray mapping',
-    text: '16-QAM, 7 dB. Most symbol errors flip one bit: BER·k/SER ≈ 1.',
-    params: { mod: '16qam', ebN0dB: 7, beta: 0.35, span: 10 },
-  },
-  {
-    title: 'Roll-off trade-off',
-    text: 'QPSK, β = 1. Lower β: bandwidth → Rs, eye opening narrows in time.',
-    params: { mod: 'qpsk', ebN0dB: 25, beta: 1, span: 10 },
-  },
-  {
-    title: 'Low SNR',
-    text: 'BPSK, 0 dB. In-band SNR below 0 dB, BER = Q(√2) ≈ 7.9e-2.',
-    params: { mod: 'bpsk', ebN0dB: 0, beta: 0.35, span: 10 },
-  },
-  {
-    title: 'Short filter',
-    text: '16-QAM, span 4 T. Truncated RRC: higher sidelobes and residual ISI.',
-    params: { mod: '16qam', ebN0dB: 30, beta: 0.2, span: 4 },
-  },
-  {
-    title: '256-QAM threshold',
-    text: '24 dB. Dropping 2 dB raises BER by about 100×.',
-    params: { mod: '256qam', ebN0dB: 24, beta: 0.25, span: 10 },
-  },
-];
 
 interface Props {
   params: LinkParams;
   update: (p: Partial<LinkParams>) => void;
   live: boolean;
   setLive: (v: boolean) => void;
-  onReseed: () => void;
 }
 
-export function Controls({ params, update, live, setLive, onReseed }: Props) {
+const EXAMPLE: Impairments = { cfo: 0.002, phaseDeg: 35, linewidth: 1e-5, timing: 0.3 };
+
+function Slider(props: {
+  id: string;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  display: string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="field">
+      <label htmlFor={props.id}>
+        {props.label} <span className="val">{props.display}</span>
+      </label>
+      <input
+        id={props.id}
+        type="range"
+        min={props.min}
+        max={props.max}
+        step={props.step}
+        value={props.value}
+        onChange={(e) => props.onChange(Number(e.target.value))}
+      />
+    </div>
+  );
+}
+
+function Group({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="group">
+      <div className="group-head">
+        <h2>{title}</h2>
+        {action}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <label className="switch">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="track" aria-hidden="true" />
+      {label}
+    </label>
+  );
+}
+
+export function Controls({ params, update, live, setLive }: Props) {
+  const imp = params.imp ?? NO_IMPAIRMENTS;
+  const setImp = (m: Partial<Impairments>) => update({ imp: { ...imp, ...m } });
+  const impaired = imp.cfo !== 0 || imp.phaseDeg !== 0 || imp.linewidth > 0 || imp.timing !== 0;
+
   return (
     <aside className="panel" aria-label="Link parameters">
-      <div className="field">
-        <span className="label">Modulation</span>
+      <Group title="Signal">
         <div className="seg" role="group" aria-label="Modulation">
           {MODULATIONS.map((m) => (
             <button key={m.id} aria-pressed={params.mod === m.id} onClick={() => update({ mod: m.id })}>
@@ -55,95 +77,126 @@ export function Controls({ params, update, live, setLive, onReseed }: Props) {
             </button>
           ))}
         </div>
-      </div>
-
-      <div className="field">
-        <label htmlFor="ebn0">
-          Eb/N0 <span className="val">{params.ebN0dB.toFixed(1)} dB</span>
-        </label>
-        <input
+        <Slider
           id="ebn0"
-          type="range"
+          label="Eb/N0"
+          value={params.ebN0dB}
           min={-4}
           max={34}
           step={0.5}
-          value={params.ebN0dB}
-          onChange={(e) => update({ ebN0dB: Number(e.target.value) })}
+          display={`${params.ebN0dB.toFixed(1)} dB`}
+          onChange={(v) => update({ ebN0dB: v })}
         />
-      </div>
+      </Group>
 
-      <div className="field">
-        <label htmlFor="beta">
-          RRC roll-off β <span className="val">{params.beta.toFixed(2)}</span>
-        </label>
-        <input
-          id="beta"
-          type="range"
-          min={0.05}
-          max={1}
-          step={0.05}
-          value={params.beta}
-          onChange={(e) => update({ beta: Number(e.target.value) })}
-        />
-      </div>
-
-      <div className="field">
-        <label htmlFor="span">
-          Filter span <span className="val">{params.span} symbols</span>
-        </label>
-        <input
-          id="span"
-          type="range"
-          min={4}
-          max={16}
-          step={2}
-          value={params.span}
-          onChange={(e) => update({ span: Number(e.target.value) })}
-        />
-      </div>
-
-      <div className="row">
-        <div className="field">
-          <label htmlFor="sps">Samples / symbol</label>
-          <select id="sps" value={params.sps} onChange={(e) => update({ sps: Number(e.target.value) })}>
-            {[4, 8, 16].map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="field">
-          <label htmlFor="nsym">Frame</label>
-          <select id="nsym" value={params.nSym} onChange={(e) => update({ nSym: Number(e.target.value) })}>
-            {[1000, 2000, 4000, 8000].map((v) => (
-              <option key={v} value={v}>
-                {v} sym
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <div className="row">
-        <label className="toggle">
-          <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />
-          Live noise
-        </label>
-        <button className="btn" onClick={onReseed} disabled={live}>
-          New frame
-        </button>
-      </div>
-
-      <div className="presets">
-        <h2>Presets</h2>
-        {PRESETS.map((p) => (
-          <button key={p.title} className="preset" onClick={() => update(p.params)}>
-            <strong>{p.title}</strong>
-            <span>{p.text}</span>
+      <Group
+        title="Channel"
+        action={
+          <button
+            className="link-btn"
+            onClick={() =>
+              impaired ? update({ imp: NO_IMPAIRMENTS }) : update({ imp: EXAMPLE, timingSync: true, carrierSync: true })
+            }
+          >
+            {impaired ? 'Reset' : 'Example'}
           </button>
-        ))}
-      </div>
+        }
+      >
+        <Slider
+          id="cfo"
+          label="Frequency offset"
+          value={imp.cfo * 1000}
+          min={-10}
+          max={10}
+          step={0.5}
+          display={`${(imp.cfo * 1000).toFixed(1)}e-3 Rs`}
+          onChange={(v) => setImp({ cfo: v / 1000 })}
+        />
+        <Slider
+          id="phase"
+          label="Phase offset"
+          value={imp.phaseDeg}
+          min={-180}
+          max={180}
+          step={5}
+          display={`${imp.phaseDeg}°`}
+          onChange={(v) => setImp({ phaseDeg: v })}
+        />
+        <Slider
+          id="pn"
+          label="Phase noise linewidth"
+          value={imp.linewidth * 1e6}
+          min={0}
+          max={100}
+          step={1}
+          display={imp.linewidth ? `${(imp.linewidth * 1e6).toFixed(0)}e-6 Rs` : 'off'}
+          onChange={(v) => setImp({ linewidth: v / 1e6 })}
+        />
+        <Slider
+          id="tau"
+          label="Timing offset"
+          value={imp.timing}
+          min={-0.5}
+          max={0.5}
+          step={0.05}
+          display={`${imp.timing.toFixed(2)} T`}
+          onChange={(v) => setImp({ timing: v })}
+        />
+      </Group>
+
+      <Group title="Receiver">
+        <Switch checked={!!params.timingSync} onChange={(v) => update({ timingSync: v })} label="Timing recovery (Gardner)" />
+        <Switch checked={!!params.carrierSync} onChange={(v) => update({ carrierSync: v })} label="Carrier recovery (PLL)" />
+      </Group>
+
+      <details className="advanced">
+        <summary>Advanced</summary>
+        <div className="group">
+          <Slider
+            id="beta"
+            label="RRC roll-off β"
+            value={params.beta}
+            min={0.05}
+            max={1}
+            step={0.05}
+            display={params.beta.toFixed(2)}
+            onChange={(v) => update({ beta: v })}
+          />
+          <Slider
+            id="span"
+            label="Filter span"
+            value={params.span}
+            min={4}
+            max={16}
+            step={2}
+            display={`${params.span} T`}
+            onChange={(v) => update({ span: v })}
+          />
+          <div className="row">
+            <div className="field">
+              <label htmlFor="sps">Samples / symbol</label>
+              <select id="sps" value={params.sps} onChange={(e) => update({ sps: Number(e.target.value) })}>
+                {[4, 8, 16].map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="nsym">Payload</label>
+              <select id="nsym" value={params.nSym} onChange={(e) => update({ nSym: Number(e.target.value) })}>
+                {[1000, 2000, 4000, 8000].map((v) => (
+                  <option key={v} value={v}>
+                    {v} sym
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <Switch checked={live} onChange={setLive} label="Live noise (new frame every 120 ms)" />
+        </div>
+      </details>
     </aside>
   );
 }

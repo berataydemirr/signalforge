@@ -88,8 +88,6 @@ export function PulseScope({ res, theme }: { res: LinkResult; theme: Theme }) {
 
   return (
     <Scope
-      title="Pulse shape"
-      subtitle="p(t) = h(t) * h(−t), Nyquist criterion"
       readout={readout}
       legend={
         <>

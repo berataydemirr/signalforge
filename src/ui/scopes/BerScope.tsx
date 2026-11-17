@@ -3,6 +3,7 @@ import type { BerPoint, LinkResult } from '../../engine/link';
 import { MODULATIONS, ModId, modInfo } from '../../dsp/modulation/constellation';
 import { shannonEbN0LimitDb, theoreticalBer } from '../../dsp/theory/ber';
 import { wilsonInterval } from '../../dsp/metrics/metrics';
+import type { BerResults } from '../useBerSweep';
 import {
   CanvasPlot,
   FONT,
@@ -24,9 +25,7 @@ const PAD = { l: 50, r: 14, t: 10, b: 38 };
 const DEC_MIN = -6;
 const XMIN = -2;
 /** Below this many errors a point is drawn hollow: its estimate is statistically loose. */
-export const LOW_CONFIDENCE_ERRORS = 50;
-
-export type BerResults = Partial<Record<ModId, BerPoint[]>>;
+const LOW_CONFIDENCE_ERRORS = 50;
 
 export const modColor = (theme: Theme, id: ModId) => theme.series[MODULATIONS.findIndex((m) => m.id === id)];
 
@@ -53,10 +52,9 @@ interface Props {
 export function BerScope({ res, theme, results, running, onRun, onStop, onClear }: Props) {
   const [hover, setHover] = useState<Hover | null>(null);
   const cur = res.params.mod;
-  const shown = MODULATIONS.map((m) => m.id).filter((id) => id === cur || (results[id]?.length ?? 0) > 0);
+  const shown = MODULATIONS.map((m) => m.id).filter((id) => id === cur || (results[id]?.points.length ?? 0) > 0);
   const xmax = Math.min(32, Math.max(10, Math.ceil(Math.max(...shown.map(reach)) + 1)));
-
-  const points = shown.flatMap((id) => (results[id] ?? []).filter((p) => p.errors > 0));
+  const points = shown.flatMap((id) => (results[id]?.points ?? []).filter((p) => p.errors > 0));
 
   const nearest = (() => {
     if (!hover) return null;
@@ -82,55 +80,39 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
     ctx.save();
     clipTo(ctx, r);
 
-    // Theory curves
+    // Theory (AWGN, ideal receiver)
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
     for (const id of shown) {
       ctx.strokeStyle = modColor(theme, id);
-      ctx.globalAlpha = id === cur || results[id]?.length ? 1 : 0.6;
       ctx.beginPath();
-      let first = true;
-      for (let db = XMIN; db <= xmax + 0.05; db += 0.1) {
+      for (let db = XMIN, first = true; db <= xmax + 0.05; db += 0.1, first = false) {
         const y = sy(Math.log10(Math.max(theoreticalBer(id, db), 1e-9)));
         if (first) ctx.moveTo(sx(db), y);
         else ctx.lineTo(sx(db), y);
-        first = false;
       }
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
 
-    // Shannon limit for the current spectral efficiency (eta = k, Nyquist band)
-    const shX = sx(shannonEbN0LimitDb(res.constellation.k));
-    ctx.strokeStyle = theme.text2;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([1, 3]);
-    ctx.beginPath();
-    ctx.moveTo(Math.round(shX) + 0.5, r.y);
-    ctx.lineTo(Math.round(shX) + 0.5, r.y + r.h);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = theme.text2;
-    ctx.font = FONT;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'top';
-    ctx.fillText(`Shannon limit, η = ${res.constellation.k}`, shX - 5, r.y + 4);
-
-    // Current operating point
+    const vline = (x: number, dash: number[], label: string, align: CanvasTextAlign, top: boolean) => {
+      ctx.strokeStyle = theme.text2;
+      ctx.lineWidth = 1;
+      ctx.setLineDash(dash);
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, r.y);
+      ctx.lineTo(Math.round(x) + 0.5, r.y + r.h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = theme.text2;
+      ctx.font = FONT;
+      ctx.textAlign = align;
+      ctx.textBaseline = top ? 'top' : 'bottom';
+      ctx.fillText(label, x + (align === 'left' ? 5 : -5), top ? r.y + 4 : r.y + r.h - 4);
+    };
+    vline(sx(shannonEbN0LimitDb(res.constellation.k)), [1, 3], `Shannon limit, η = ${res.constellation.k}`, 'right', true);
     const opX = sx(res.params.ebN0dB);
-    ctx.strokeStyle = theme.text2;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(Math.round(opX) + 0.5, r.y);
-    ctx.lineTo(Math.round(opX) + 0.5, r.y + r.h);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = theme.text2;
-    ctx.font = FONT;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText('operating point', opX + 5, r.y + r.h - 4);
+    vline(opX, [4, 4], 'operating point', 'left', false);
+
     if (res.ber > 0) {
       const y = sy(Math.log10(res.ber));
       ctx.strokeStyle = theme.text;
@@ -144,7 +126,7 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
       ctx.stroke();
     }
 
-    // 95% Wilson confidence intervals
+    // 95% Wilson intervals
     ctx.lineWidth = 1.5;
     for (const p of points) {
       const [lo, hi] = wilsonInterval(p.errors, p.bits);
@@ -162,15 +144,11 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
       ctx.stroke();
     }
 
-    // Simulated points
     for (const p of points) {
-      const x = sx(p.ebN0dB);
-      const y = sy(Math.log10(p.ber));
       const col = modColor(theme, p.mod);
       const solid = p.errors >= LOW_CONFIDENCE_ERRORS;
-      const rad = p === nearest ? 6 : 4.5;
       ctx.beginPath();
-      ctx.arc(x, y, rad, 0, 2 * Math.PI);
+      ctx.arc(sx(p.ebN0dB), sy(Math.log10(p.ber)), p === nearest ? 6 : 4.5, 0, 2 * Math.PI);
       ctx.fillStyle = solid ? col : theme.surface;
       ctx.fill();
       ctx.lineWidth = 2;
@@ -183,51 +161,44 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
   let tip = null;
   if (hover && nearest) {
     const { sx, sy } = layout(hover.w, hover.h, xmax);
-    const th = theoreticalBer(nearest.mod, nearest.ebN0dB);
     const x = sx(nearest.ebN0dB);
     const y = sy(Math.log10(nearest.ber));
     const left = x > hover.w * 0.6;
     tip = (
-      <div
-        className="tooltip"
-        style={{ left: left ? undefined : x + 12, right: left ? hover.w - x + 12 : undefined, top: Math.max(4, y - 30) }}
-      >
+      <div className="tooltip" style={{ left: left ? undefined : x + 12, right: left ? hover.w - x + 12 : undefined, top: Math.max(4, y - 30) }}>
         <div className="t">
-          {modInfo(nearest.mod).label} @ {nearest.ebN0dB.toFixed(1)} dB
+          {results[nearest.mod]?.label} @ {nearest.ebN0dB.toFixed(1)} dB
         </div>
         <div className="m">
-          BER {fmtSci(nearest.ber)} · theory {fmtSci(th)}
+          BER {fmtSci(nearest.ber)} · theory {fmtSci(theoreticalBer(nearest.mod, nearest.ebN0dB))}
         </div>
         <div className="m">
           {nearest.errors} errors / {fmtCount(nearest.bits)} bits
-          {nearest.errors < LOW_CONFIDENCE_ERRORS ? ' · low confidence' : ''}
         </div>
       </div>
     );
   }
 
-  const rows = shown.flatMap((id) => results[id] ?? []);
-  const curLabel = modInfo(cur).label;
+  const series = shown.filter((id) => results[id]?.points.length);
+  const rows = series.flatMap((id) => results[id]!.points);
 
   return (
     <Scope
-      title="BER vs Eb/N0"
-      subtitle="Monte Carlo on the full waveform link vs closed-form theory"
       actions={
         running ? (
           <button className="btn" onClick={onStop}>
-            Stop ({modInfo(running).label}…)
+            Stop
           </button>
         ) : (
           <>
-            <button className="btn primary" onClick={onRun}>
-              Run sweep: {curLabel}
-            </button>
             {rows.length > 0 && (
-              <button className="btn" onClick={onClear}>
+              <button className="btn ghost" onClick={onClear}>
                 Clear
               </button>
             )}
+            <button className="btn primary" onClick={onRun}>
+              Run sweep
+            </button>
           </>
         )
       }
@@ -236,55 +207,54 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
           {shown.map((id) => (
             <span className="item" key={id}>
               <span className="sw" style={{ background: modColor(theme, id) }} />
-              {modInfo(id).label}
+              {results[id]?.label ?? modInfo(id).label}
             </span>
           ))}
-          <span className="item">line: theory</span>
-          <span className="item">dot: simulated, 95% CI (hollow: &lt; {LOW_CONFIDENCE_ERRORS} errors)</span>
-          <span className="item">diamond: live frame</span>
+          <span className="item muted">line: AWGN theory · dots: simulation, 95% CI</span>
         </>
       }
       readout={
-        rows.length === 0
-          ? 'No sweep yet. Each point runs to 300 errors or 2M bits.'
-          : `${rows.length} simulated points · ${fmtCount(rows.reduce((a, p) => a + p.bits, 0))} bits total`
+        running
+          ? `Simulating ${modInfo(running).label}… ${results[running]?.points.length ?? 0} points`
+          : rows.length === 0
+            ? 'Sweep uses the current channel and receiver settings. Each point runs to 300 errors or 2M bits.'
+            : `${rows.length} points · ${fmtCount(rows.reduce((a, p) => a + p.bits, 0))} bits simulated`
       }
       footer={
         rows.length > 0 && (
           <details className="table">
-            <summary>Data table</summary>
+            <summary>Data</summary>
             <table>
               <thead>
                 <tr>
-                  <th>Modulation</th>
-                  <th>Eb/N0 (dB)</th>
+                  <th>Series</th>
+                  <th>Eb/N0</th>
                   <th>Errors</th>
                   <th>Bits</th>
-                  <th>BER (sim)</th>
+                  <th>BER</th>
                   <th>95% CI</th>
-                  <th>BER (theory)</th>
-                  <th>Sim / theory</th>
+                  <th>Theory</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((p) => {
-                  const th = theoreticalBer(p.mod, p.ebN0dB);
-                  const [lo, hi] = wilsonInterval(p.errors, p.bits);
-                  return (
-                    <tr key={`${p.mod}-${p.ebN0dB}`}>
-                      <td>{modInfo(p.mod).label}</td>
-                      <td>{p.ebN0dB.toFixed(1)}</td>
-                      <td>{p.errors}</td>
-                      <td>{fmtCount(p.bits)}</td>
-                      <td>{fmtSci(p.ber)}</td>
-                      <td>
-                        {fmtSci(lo)} – {fmtSci(hi)}
-                      </td>
-                      <td>{fmtSci(th)}</td>
-                      <td>{p.errors ? (p.ber / th).toFixed(3) : '—'}</td>
-                    </tr>
-                  );
-                })}
+                {series.flatMap((id) =>
+                  results[id]!.points.map((p) => {
+                    const [lo, hi] = wilsonInterval(p.errors, p.bits);
+                    return (
+                      <tr key={`${id}-${p.ebN0dB}`}>
+                        <td>{results[id]!.label}</td>
+                        <td>{p.ebN0dB.toFixed(1)}</td>
+                        <td>{p.errors}</td>
+                        <td>{fmtCount(p.bits)}</td>
+                        <td>{fmtSci(p.ber)}</td>
+                        <td>
+                          {fmtSci(lo)} – {fmtSci(hi)}
+                        </td>
+                        <td>{fmtSci(theoreticalBer(p.mod, p.ebN0dB))}</td>
+                      </tr>
+                    );
+                  }),
+                )}
               </tbody>
             </table>
           </details>

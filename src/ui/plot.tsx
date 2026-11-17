@@ -201,7 +201,6 @@ export function CanvasPlot({ draw, deps, label, onHover, children }: CanvasPlotP
 }
 
 interface ScopeProps {
-  title: string;
   subtitle?: string;
   actions?: ReactNode;
   legend?: ReactNode;
@@ -210,19 +209,23 @@ interface ScopeProps {
   footer?: ReactNode;
 }
 
-export function Scope({ title, subtitle, actions, legend, readout, children, footer }: ScopeProps) {
+/** Body of a plot: optional caption/legend row, the canvas, and a one-line readout. */
+export function Scope({ subtitle, actions, legend, readout, children, footer }: ScopeProps) {
   return (
-    <section className="scope">
-      <header>
-        <h3>{title}</h3>
-        {subtitle && <span className="sub">{subtitle}</span>}
-        {actions && <div className="end">{actions}</div>}
-      </header>
-      {legend && <div className="legend">{legend}</div>}
+    <div className="scope">
+      {(subtitle || legend || actions) && (
+        <div className="scope-head">
+          <div className="meta">
+            {subtitle && <span className="sub">{subtitle}</span>}
+            {legend && <span className="legend">{legend}</span>}
+          </div>
+          {actions && <div className="actions">{actions}</div>}
+        </div>
+      )}
       {children}
       <div className="readout">{readout ?? ' '}</div>
       {footer}
-    </section>
+    </div>
   );
 }
 
