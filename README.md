@@ -42,8 +42,6 @@ src/ui/       React + Canvas 2D scopes
 tests/        unit tests and simulation-vs-theory validation
 ```
 
-No DSP libraries are used.
-
 ## Run
 
 ```bash
@@ -51,17 +49,5 @@ npm install
 npm run dev    # http://localhost:5173/signalforge/
 npm test
 ```
-
-## Roadmap
-
-- [x] M1: baseband link over AWGN
-- [ ] M2: CFO, phase noise, timing offset, IQ imbalance, fading; Costas loop, Gardner TED, LMS equalizer
-- [ ] M3: OFDM with pilot channel estimation; convolutional code + Viterbi
-- [ ] M4: acoustic modem (speaker to microphone)
-- [ ] M5: flowgraph editor, RTL-SDR over WebUSB, analog modulations
-
-## References
-
-Lathi & Ding, *Modern Digital and Analog Communication Systems* · Proakis & Salehi, *Digital Communications* · Craig, MILCOM 1991 · Cho & Yoon, IEEE Trans. Commun. 2002
 
 MIT License
