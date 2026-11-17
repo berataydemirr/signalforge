@@ -104,28 +104,27 @@ export function mapBits(bits: Uint8Array, c: Constellation): CVec {
   return y;
 }
 
-/** Hard-decision (minimum-distance) detection, returning symbol labels. O(1) per symbol. */
+/** Minimum-distance decision for one sample, returning its label. O(1). */
+export function sliceLabel(c: Constellation, re: number, im: number): number {
+  if (c.kind === 'psk') {
+    const step = (2 * Math.PI) / c.M;
+    const a = Math.atan2(im, re) - c.param;
+    return gray(((Math.round(a / step) % c.M) + c.M) % c.M);
+  }
+  const L = Math.round(Math.sqrt(c.M));
+  const inv = 1 / c.param;
+  const ax = (v: number) => {
+    const idx = Math.round((v * inv + L - 1) / 2);
+    return gray(idx < 0 ? 0 : idx > L - 1 ? L - 1 : idx);
+  };
+  return (ax(re) << (c.k / 2)) | ax(im);
+}
+
+/** Hard-decision (minimum-distance) detection, returning symbol labels. */
 export function detectLabels(x: CVec, c: Constellation): Uint16Array {
   const n = x.re.length;
   const out = new Uint16Array(n);
-  if (c.kind === 'psk') {
-    const M = c.M;
-    const step = (2 * Math.PI) / M;
-    for (let i = 0; i < n; i++) {
-      const a = Math.atan2(x.im[i], x.re[i]) - c.param;
-      const m = ((Math.round(a / step) % M) + M) % M;
-      out[i] = gray(m);
-    }
-  } else {
-    const L = Math.round(Math.sqrt(c.M));
-    const half = c.k / 2;
-    const inv = 1 / c.param;
-    const slice = (v: number) => {
-      const idx = Math.round((v * inv + L - 1) / 2);
-      return gray(idx < 0 ? 0 : idx > L - 1 ? L - 1 : idx);
-    };
-    for (let i = 0; i < n; i++) out[i] = (slice(x.re[i]) << half) | slice(x.im[i]);
-  }
+  for (let i = 0; i < n; i++) out[i] = sliceLabel(c, x.re[i], x.im[i]);
   return out;
 }
 

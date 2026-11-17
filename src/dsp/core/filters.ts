@@ -10,8 +10,9 @@ import { CVec, cvec } from './complex';
  * @param beta  roll-off factor, 0 < beta <= 1
  * @param sps   samples per symbol
  * @param span  filter length in symbols (taps = span * sps + 1)
+ * @param delay extra (fractional) delay in samples; used to model a timing offset
  */
-export function rrcTaps(beta: number, sps: number, span: number): Float64Array {
+export function rrcTaps(beta: number, sps: number, span: number, delay = 0): Float64Array {
   if (!(beta > 0 && beta <= 1)) throw new Error('rrcTaps: beta must be in (0, 1]');
   if (!Number.isInteger(sps) || sps < 2) throw new Error('rrcTaps: sps must be an integer >= 2');
   const n = span * sps + 1;
@@ -20,7 +21,7 @@ export function rrcTaps(beta: number, sps: number, span: number): Float64Array {
   const singular = 1 / (4 * beta);
 
   for (let i = 0; i < n; i++) {
-    const t = (i - mid) / sps; // time in symbol periods
+    const t = (i - mid - delay) / sps; // time in symbol periods
     if (Math.abs(t) < 1e-12) {
       h[i] = 1 - beta + (4 * beta) / Math.PI;
     } else if (Math.abs(Math.abs(t) - singular) < 1e-9) {

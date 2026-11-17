@@ -1,12 +1,8 @@
-import type { ModId } from '../dsp/modulation/constellation';
-import type { BerPoint } from './link';
+import type { BerPoint, LinkConfig } from './link';
 
 export interface BerSweepRequest {
   runId: number;
-  mod: ModId;
-  beta: number;
-  sps: number;
-  span: number;
+  cfg: LinkConfig;
   points: number[];
   targetErrors: number;
   maxBits: number;

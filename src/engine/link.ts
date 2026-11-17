@@ -1,7 +1,13 @@
-import { CVec, downsample } from '../dsp/core/complex';
+import { CVec, cvec, downsample } from '../dsp/core/complex';
 import { firFilter, residualIsiDb, rrcTaps, shapeSymbols } from '../dsp/core/filters';
 import { Gaussian, mulberry32 } from '../dsp/core/prng';
 import { addAwgn, n0FromEbN0 } from '../dsp/channel/awgn';
+import {
+  Impairments,
+  NO_IMPAIRMENTS,
+  applyCarrierImpairments,
+  hasCarrierImpairment,
+} from '../dsp/channel/impairments';
 import { countBitErrors, randomBits } from '../dsp/source/bits';
 import {
   Constellation,
@@ -14,12 +20,10 @@ import {
   minDistance,
 } from '../dsp/modulation/constellation';
 import { Psd, evmPercent, eyeTraces, snrFromEvmDb, welchPsd, wilsonInterval } from '../dsp/metrics/metrics';
-import {
-  capacityPerHz,
-  shannonEbN0LimitDb,
-  theoreticalBer,
-  theoreticalSer,
-} from '../dsp/theory/ber';
+import { capacityPerHz, shannonEbN0LimitDb, theoreticalBer, theoreticalSer } from '../dsp/theory/ber';
+import { gardnerTiming } from '../dsp/sync/timing';
+import { PREAMBLE_LEN, carrierRecovery, preamble } from '../dsp/sync/carrier';
+import { wrapPi } from '../dsp/sync/loop';
 
 export interface LinkParams {
   mod: ModId;
@@ -30,44 +34,108 @@ export interface LinkParams {
   sps: number;
   /** RRC span in symbols. */
   span: number;
-  /** Symbols per frame. */
+  /** Payload symbols per frame (a known preamble is prepended). */
   nSym: number;
   seed: number;
+  imp?: Impairments;
+  timingSync?: boolean;
+  carrierSync?: boolean;
 }
 
 interface CoreResult {
   c: Constellation;
   bits: Uint8Array;
-  txSym: CVec;
   txWave: CVec;
   rxWave: CVec;
   mf: CVec;
+  /** Payload symbols after the receiver (timing + carrier recovery when enabled). */
   rxSym: CVec;
   labels: Uint16Array;
-  rxBits: Uint8Array;
   bitErrors: number;
   symbolErrors: number;
   delay: number;
   taps: Float64Array;
+  /** Per frame symbol (preamble + payload): phase error and timing error of the receiver. */
+  phaseErr: Float64Array;
+  timingErr: Float64Array;
+}
+
+function concat(a: CVec, b: CVec): CVec {
+  const y = cvec(a.re.length + b.re.length);
+  y.re.set(a.re);
+  y.re.set(b.re, a.re.length);
+  y.im.set(a.im);
+  y.im.set(b.im, a.re.length);
+  return y;
 }
 
 /**
- * The complete M1 link, at waveform level:
- *   bits -> Gray mapper -> RRC shaping -> AWGN -> matched RRC filter -> sampler -> slicer -> bits
+ * The complete link, at waveform level:
+ *   [preamble | Gray-mapped payload] -> RRC -> timing offset -> CFO / phase noise -> AWGN
+ *   -> matched RRC -> (Gardner timing recovery) -> (carrier PLL) -> slicer -> bits
  */
 function runCore(p: LinkParams, h?: Float64Array): CoreResult {
   const c = getConstellation(p.mod);
+  const imp = p.imp ?? NO_IMPAIRMENTS;
   const rng = mulberry32(p.seed);
   const gauss = new Gaussian(mulberry32((p.seed ^ 0x9e3779b9) >>> 0));
   const taps = h ?? rrcTaps(p.beta, p.sps, p.span);
+  const pre = preamble();
+  const nTot = PREAMBLE_LEN + p.nSym;
 
   const bits = randomBits(p.nSym * c.k, rng);
-  const txSym = mapBits(bits, c);
-  const txWave = shapeSymbols(txSym, taps, p.sps);
-  const rxWave = addAwgn(txWave, n0FromEbN0(p.ebN0dB, c.k), gauss);
+  const txSym = concat(pre, mapBits(bits, c));
+
+  // Timing offset: the transmit pulse is delayed by tau*T relative to the receiver's clock.
+  const txTaps = imp.timing !== 0 ? rrcTaps(p.beta, p.sps, p.span, imp.timing * p.sps) : taps;
+  const txWave = shapeSymbols(txSym, txTaps, p.sps);
+
+  let channelIn = txWave;
+  let truePhase: Float64Array | null = null;
+  if (hasCarrierImpairment(imp)) {
+    const pg = new Gaussian(mulberry32((p.seed ^ 0x2545f491) >>> 0));
+    const r = applyCarrierImpairments(txWave, imp, p.sps, pg);
+    channelIn = r.y;
+    truePhase = r.phase;
+  }
+  const rxWave = addAwgn(channelIn, n0FromEbN0(p.ebN0dB, c.k), gauss);
   const mf = firFilter(rxWave, taps);
   const delay = taps.length - 1; // two filters, each with (taps-1)/2 group delay
-  const rxSym = downsample(mf, delay, p.sps, p.nSym);
+
+  let sym: CVec;
+  let tauHat: Float64Array | null = null;
+  if (p.timingSync) {
+    // Wide timing loop for the first half of the preamble, so carrier acquisition
+    // (data-aided over the preamble) sees settled timing for its second half.
+    const t = gardnerTiming(mf, delay, p.sps, nTot, p.beta, PREAMBLE_LEN / 2);
+    sym = t.sym;
+    tauHat = t.tauHat;
+  } else {
+    sym = downsample(mf, delay, p.sps, nTot);
+  }
+
+  let phaseHat: Float64Array | null = null;
+  if (p.carrierSync) {
+    const r = carrierRecovery(sym, c, pre);
+    sym = r.out;
+    phaseHat = r.phaseHat;
+  }
+
+  // Receiver errors vs. the truth, per symbol (for the sync scope).
+  const phaseErr = new Float64Array(nTot);
+  const timingErr = new Float64Array(nTot);
+  const peak0 = (txTaps.length - 1) / 2 + imp.timing * p.sps;
+  for (let k = 0; k < nTot; k++) {
+    let ph = 0;
+    if (truePhase) {
+      const idx = Math.min(truePhase.length - 1, Math.max(0, Math.round(k * p.sps + peak0)));
+      ph = truePhase[idx];
+    }
+    phaseErr[k] = wrapPi((phaseHat ? phaseHat[k] : 0) - ph);
+    timingErr[k] = (tauHat ? tauHat[k] : 0) - imp.timing;
+  }
+
+  const rxSym = { re: sym.re.slice(PREAMBLE_LEN), im: sym.im.slice(PREAMBLE_LEN) };
   const labels = detectLabels(rxSym, c);
   const rxBits = labelsToBits(labels, c.k);
   const bitErrors = countBitErrors(bits, rxBits);
@@ -80,7 +148,60 @@ function runCore(p: LinkParams, h?: Float64Array): CoreResult {
       }
     }
   }
-  return { c, bits, txSym, txWave, rxWave, mf, rxSym, labels, rxBits, bitErrors, symbolErrors, delay, taps };
+  return {
+    c,
+    bits,
+    txWave,
+    rxWave,
+    mf,
+    rxSym,
+    labels,
+    bitErrors,
+    symbolErrors,
+    delay,
+    taps,
+    phaseErr,
+    timingErr,
+  };
+}
+
+export interface SyncStats {
+  /** RMS residual phase error over the payload, degrees. */
+  phaseRmsDeg: number;
+  /** RMS residual timing error over the payload, in T. */
+  timingRms: number;
+  /** Symbol after which the smoothed errors stay inside (10 deg, 0.1 T) for good; -1 if never. */
+  lockAt: number;
+}
+
+function syncStats(phaseErr: Float64Array, timingErr: Float64Array): SyncStats {
+  const n = phaseErr.length;
+  let sp = 0;
+  let st = 0;
+  for (let k = PREAMBLE_LEN; k < n; k++) {
+    sp += phaseErr[k] ** 2;
+    st += timingErr[k] ** 2;
+  }
+  const m = Math.max(1, n - PREAMBLE_LEN);
+  // Lock = the symbol after which the 16-symbol moving average of both errors never
+  // leaves (10 deg, 0.1 T) again. Averaging keeps single noisy symbols from counting.
+  const W = 16;
+  const limP = (10 * Math.PI) / 180;
+  let accP = 0;
+  let accT = 0;
+  let lastBad = -1;
+  for (let k = 0; k < n; k++) {
+    accP += phaseErr[k];
+    accT += timingErr[k];
+    if (k >= W) {
+      accP -= phaseErr[k - W];
+      accT -= timingErr[k - W];
+    }
+    const m = Math.min(k + 1, W);
+    if (Math.abs(accP / m) > limP || Math.abs(accT / m) > 0.1) lastBad = k;
+  }
+  const lockAt = lastBad < n - 64 ? lastBad + 1 : -1;
+  return { phaseRmsDeg: (Math.sqrt(sp / m) * 180) / Math.PI, timingRms: Math.sqrt(st / m), lockAt };
 }
 
 export interface LinkResult {
@@ -117,6 +238,9 @@ export interface LinkResult {
   psdTx: Psd;
   psdRx: Psd;
   eye: Float64Array[];
+  phaseErr: Float64Array;
+  timingErr: Float64Array;
+  sync: SyncStats;
 }
 
 function stopbandLevelDb(psd: Psd, sps: number, beta: number): number {
@@ -159,7 +283,10 @@ export function simulateLink(p: LinkParams): LinkResult {
     shannonLimitDb: shannonEbN0LimitDb(r.c.k),
     psdTx,
     psdRx: welchPsd(r.rxWave, 512),
-    eye: eyeTraces(r.mf.re, r.delay, p.sps, p.nSym, 250),
+    eye: eyeTraces(r.mf.re, r.delay + PREAMBLE_LEN * p.sps, p.sps, p.nSym, 250),
+    phaseErr: r.phaseErr,
+    timingErr: r.timingErr,
+    sync: syncStats(r.phaseErr, r.timingErr),
   };
 }
 
@@ -180,16 +307,13 @@ export interface BerPointOptions {
   frameSym?: number;
 }
 
+export type LinkConfig = Omit<LinkParams, 'ebN0dB' | 'nSym' | 'seed'>;
+
 /**
  * Monte Carlo BER at one Eb/N0, run on the full waveform-level link
  * (not a symbol-level shortcut), frame after frame until enough errors are seen.
  */
-export function simulateBerPoint(
-  base: Omit<LinkParams, 'ebN0dB' | 'nSym' | 'seed'>,
-  ebN0dB: number,
-  opts: BerPointOptions,
-  seed = 1,
-): BerPoint {
+export function simulateBerPoint(base: LinkConfig, ebN0dB: number, opts: BerPointOptions, seed = 1): BerPoint {
   const frameSym = opts.frameSym ?? 4096;
   const taps = rrcTaps(base.beta, base.sps, base.span);
   let errors = 0;
