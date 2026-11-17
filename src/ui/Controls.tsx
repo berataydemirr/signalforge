@@ -9,24 +9,29 @@ export interface Preset {
 
 export const PRESETS: Preset[] = [
   {
-    title: 'Gray coding at work',
-    text: '16-QAM at 7 dB: errors land on neighbours, which differ by one bit, so BER ≈ SER / 4.',
-    params: { mod: '16qam', ebN0dB: 7, beta: 0.35 },
+    title: 'Gray mapping',
+    text: '16-QAM, 7 dB. Most symbol errors flip one bit: BER·k/SER ≈ 1.',
+    params: { mod: '16qam', ebN0dB: 7, beta: 0.35, span: 10 },
   },
   {
-    title: 'Bandwidth vs roll-off',
-    text: 'β = 1 → wide spectrum, wide-open eye. Drag β to 0.05: spectrum → Rs/2, eye closes in time.',
-    params: { mod: 'qpsk', ebN0dB: 25, beta: 1 },
+    title: 'Roll-off trade-off',
+    text: 'QPSK, β = 1. Lower β: bandwidth → Rs, eye opening narrows in time.',
+    params: { mod: 'qpsk', ebN0dB: 25, beta: 1, span: 10 },
   },
   {
-    title: 'Signal below the noise floor',
-    text: 'BPSK at 0 dB Eb/N0: the PSD is mostly noise, yet BER is only ~8%.',
-    params: { mod: 'bpsk', ebN0dB: 0, beta: 0.35 },
+    title: 'Low SNR',
+    text: 'BPSK, 0 dB. In-band SNR below 0 dB, BER = Q(√2) ≈ 7.9e-2.',
+    params: { mod: 'bpsk', ebN0dB: 0, beta: 0.35, span: 10 },
   },
   {
-    title: 'The 256-QAM cliff',
-    text: '8 bits/symbol needs ~24 dB for clean decisions. Lower Eb/N0 2 dB and watch it collapse.',
-    params: { mod: '256qam', ebN0dB: 26, beta: 0.25 },
+    title: 'Short filter',
+    text: '16-QAM, span 4 T. Truncated RRC: higher sidelobes and residual ISI.',
+    params: { mod: '16qam', ebN0dB: 30, beta: 0.2, span: 4 },
+  },
+  {
+    title: '256-QAM threshold',
+    text: '24 dB. Dropping 2 dB raises BER by about 100×.',
+    params: { mod: '256qam', ebN0dB: 24, beta: 0.25, span: 10 },
   },
 ];
 
@@ -131,7 +136,7 @@ export function Controls({ params, update, live, setLive, onReseed }: Props) {
       </div>
 
       <div className="presets">
-        <h2>Try this</h2>
+        <h2>Presets</h2>
         {PRESETS.map((p) => (
           <button key={p.title} className="preset" onClick={() => update(p.params)}>
             <strong>{p.title}</strong>

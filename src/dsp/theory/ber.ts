@@ -44,6 +44,42 @@ export function theoreticalBer(id: ModId, ebN0dB: number): number {
   return (4 / k) * (1 - 1 / sq) * s;
 }
 
+/**
+ * Theoretical symbol error probability over AWGN (exact for both families).
+ *  - M-PSK: Craig's formula.
+ *  - Square M-QAM: 1 - (1 - P_L)^2 with P_L = 2(1 - 1/L) Q(sqrt(3 Es/N0 / (M - 1))), L = sqrt(M).
+ */
+export function theoreticalSer(id: ModId, esN0dB: number): number {
+  const { kind, M } = modInfo(id);
+  const gs = db2lin(esN0dB);
+  if (kind === 'psk') return pskSer(M, gs);
+  const L = Math.sqrt(M);
+  const pl = 2 * (1 - 1 / L) * qfunc(Math.sqrt((3 * gs) / (M - 1)));
+  return 1 - (1 - pl) ** 2;
+}
+
+/** AWGN capacity per Hz for a band of (1+beta) Rs: log2(1 + (Es/N0) / (1+beta)). */
+export function capacityPerHz(esN0dB: number, beta: number): number {
+  return Math.log2(1 + db2lin(esN0dB) / (1 + beta));
+}
+
+/** Shannon limit on Eb/N0 for spectral efficiency eta (bit/s/Hz): (2^eta - 1) / eta, in dB. */
+export function shannonEbN0LimitDb(eta: number): number {
+  return 10 * Math.log10((Math.pow(2, eta) - 1) / eta);
+}
+
+/** Eb/N0 (dB) at which the theoretical BER equals `target` (bisection; BER is monotone in Eb/N0). */
+export function ebN0ForBer(id: ModId, target: number): number {
+  let lo = -10;
+  let hi = 60;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (theoreticalBer(id, mid) > target) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
 export function isExactTheory(id: ModId): boolean {
   return id === 'bpsk' || id === 'qpsk';
 }

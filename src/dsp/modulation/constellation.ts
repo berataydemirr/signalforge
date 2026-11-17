@@ -83,6 +83,14 @@ export function getConstellation(id: ModId): Constellation {
   return c;
 }
 
+/** Minimum Euclidean distance between constellation points (Es = 1). */
+export function minDistance(c: Constellation): number {
+  let d = Infinity;
+  for (let a = 0; a < c.M; a++)
+    for (let b = a + 1; b < c.M; b++) d = Math.min(d, Math.hypot(c.re[a] - c.re[b], c.im[a] - c.im[b]));
+  return d;
+}
+
 /** Map bits (MSB first, k per symbol) to complex symbols. Trailing bits that don't fill a symbol are ignored. */
 export function mapBits(bits: Uint8Array, c: Constellation): CVec {
   const nSym = Math.floor(bits.length / c.k);

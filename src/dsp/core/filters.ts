@@ -61,6 +61,26 @@ export function shapeSymbols(sym: CVec, h: Float64Array, sps: number): CVec {
   return y;
 }
 
+/** Overall TX * RX response of a matched pair: h convolved with itself (a raised cosine for RRC taps). */
+export function selfConvolve(h: Float64Array): Float64Array {
+  const n = h.length;
+  const y = new Float64Array(2 * n - 1);
+  for (let i = 0; i < n; i++) for (let k = 0; k < n; k++) y[i + k] += h[i] * h[k];
+  return y;
+}
+
+/**
+ * Residual ISI from truncating the RRC pair: energy of the overall pulse at the
+ * non-zero symbol instants relative to the peak, in dB. Ideal (infinite) RRC gives -inf.
+ */
+export function residualIsiDb(h: Float64Array, sps: number): number {
+  const p = selfConvolve(h);
+  const mid = h.length - 1;
+  let isi = 0;
+  for (let m = sps; mid + m < p.length; m += sps) isi += p[mid + m] ** 2 + p[mid - m] ** 2;
+  return 10 * Math.log10(isi / (p[mid] * p[mid]) + 1e-30);
+}
+
 /** Full linear convolution of a complex signal with real taps. Length = n + taps - 1. */
 export function firFilter(x: CVec, h: Float64Array): CVec {
   const n = x.re.length;

@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { BerPoint, LinkResult } from '../../engine/link';
 import { MODULATIONS, ModId, modInfo } from '../../dsp/modulation/constellation';
-import { theoreticalBer } from '../../dsp/theory/ber';
+import { shannonEbN0LimitDb, theoreticalBer } from '../../dsp/theory/ber';
+import { wilsonInterval } from '../../dsp/metrics/metrics';
 import {
   CanvasPlot,
   FONT,
@@ -99,6 +100,22 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
     }
     ctx.globalAlpha = 1;
 
+    // Shannon limit for the current spectral efficiency (eta = k, Nyquist band)
+    const shX = sx(shannonEbN0LimitDb(res.constellation.k));
+    ctx.strokeStyle = theme.text2;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([1, 3]);
+    ctx.beginPath();
+    ctx.moveTo(Math.round(shX) + 0.5, r.y);
+    ctx.lineTo(Math.round(shX) + 0.5, r.y + r.h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = theme.text2;
+    ctx.font = FONT;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`Shannon limit, η = ${res.constellation.k}`, shX - 5, r.y + 4);
+
     // Current operating point
     const opX = sx(res.params.ebN0dB);
     ctx.strokeStyle = theme.text2;
@@ -124,6 +141,24 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
       ctx.lineTo(opX, y + 6);
       ctx.lineTo(opX - 6, y);
       ctx.closePath();
+      ctx.stroke();
+    }
+
+    // 95% Wilson confidence intervals
+    ctx.lineWidth = 1.5;
+    for (const p of points) {
+      const [lo, hi] = wilsonInterval(p.errors, p.bits);
+      const x = Math.round(sx(p.ebN0dB)) + 0.5;
+      const y0 = sy(Math.log10(Math.max(lo, 1e-9)));
+      const y1 = sy(Math.log10(hi));
+      ctx.strokeStyle = modColor(theme, p.mod);
+      ctx.beginPath();
+      ctx.moveTo(x, y0);
+      ctx.lineTo(x, y1);
+      ctx.moveTo(x - 4, y0);
+      ctx.lineTo(x + 4, y0);
+      ctx.moveTo(x - 4, y1);
+      ctx.lineTo(x + 4, y1);
       ctx.stroke();
     }
 
@@ -204,14 +239,14 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
               {modInfo(id).label}
             </span>
           ))}
-          <span className="item">— theory</span>
-          <span className="item">● simulated (○ &lt; {LOW_CONFIDENCE_ERRORS} errors)</span>
-          <span className="item">◇ live frame</span>
+          <span className="item">line: theory</span>
+          <span className="item">dot: simulated, 95% CI (hollow: &lt; {LOW_CONFIDENCE_ERRORS} errors)</span>
+          <span className="item">diamond: live frame</span>
         </>
       }
       readout={
         rows.length === 0
-          ? `Run a sweep: each point simulates until 300 errors or 2M bits (Web Worker, UI stays responsive).`
+          ? 'No sweep yet. Each point runs to 300 errors or 2M bits.'
           : `${rows.length} simulated points · ${fmtCount(rows.reduce((a, p) => a + p.bits, 0))} bits total`
       }
       footer={
@@ -226,6 +261,7 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
                   <th>Errors</th>
                   <th>Bits</th>
                   <th>BER (sim)</th>
+                  <th>95% CI</th>
                   <th>BER (theory)</th>
                   <th>Sim / theory</th>
                 </tr>
@@ -233,6 +269,7 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
               <tbody>
                 {rows.map((p) => {
                   const th = theoreticalBer(p.mod, p.ebN0dB);
+                  const [lo, hi] = wilsonInterval(p.errors, p.bits);
                   return (
                     <tr key={`${p.mod}-${p.ebN0dB}`}>
                       <td>{modInfo(p.mod).label}</td>
@@ -240,6 +277,9 @@ export function BerScope({ res, theme, results, running, onRun, onStop, onClear 
                       <td>{p.errors}</td>
                       <td>{fmtCount(p.bits)}</td>
                       <td>{fmtSci(p.ber)}</td>
+                      <td>
+                        {fmtSci(lo)} – {fmtSci(hi)}
+                      </td>
                       <td>{fmtSci(th)}</td>
                       <td>{p.errors ? (p.ber / th).toFixed(3) : '—'}</td>
                     </tr>

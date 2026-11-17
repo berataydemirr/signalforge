@@ -1,5 +1,5 @@
 import { CVec, downsample } from '../dsp/core/complex';
-import { firFilter, rrcTaps, shapeSymbols } from '../dsp/core/filters';
+import { firFilter, residualIsiDb, rrcTaps, shapeSymbols } from '../dsp/core/filters';
 import { Gaussian, mulberry32 } from '../dsp/core/prng';
 import { addAwgn, n0FromEbN0 } from '../dsp/channel/awgn';
 import { countBitErrors, randomBits } from '../dsp/source/bits';
@@ -11,9 +11,15 @@ import {
   labelsToBits,
   labelsToSymbols,
   mapBits,
+  minDistance,
 } from '../dsp/modulation/constellation';
-import { Psd, evmPercent, eyeTraces, snrFromEvmDb, welchPsd } from '../dsp/metrics/metrics';
-import { theoreticalBer } from '../dsp/theory/ber';
+import { Psd, evmPercent, eyeTraces, snrFromEvmDb, welchPsd, wilsonInterval } from '../dsp/metrics/metrics';
+import {
+  capacityPerHz,
+  shannonEbN0LimitDb,
+  theoreticalBer,
+  theoreticalSer,
+} from '../dsp/theory/ber';
 
 export interface LinkParams {
   mod: ModId;
@@ -40,7 +46,9 @@ interface CoreResult {
   labels: Uint16Array;
   rxBits: Uint8Array;
   bitErrors: number;
+  symbolErrors: number;
   delay: number;
+  taps: Float64Array;
 }
 
 /**
@@ -63,7 +71,16 @@ function runCore(p: LinkParams, h?: Float64Array): CoreResult {
   const labels = detectLabels(rxSym, c);
   const rxBits = labelsToBits(labels, c.k);
   const bitErrors = countBitErrors(bits, rxBits);
-  return { c, bits, txSym, txWave, rxWave, mf, rxSym, labels, rxBits, bitErrors, delay };
+  let symbolErrors = 0;
+  for (let s = 0; s < p.nSym; s++) {
+    for (let j = 0; j < c.k; j++) {
+      if (bits[s * c.k + j] !== rxBits[s * c.k + j]) {
+        symbolErrors++;
+        break;
+      }
+    }
+  }
+  return { c, bits, txSym, txWave, rxWave, mf, rxSym, labels, rxBits, bitErrors, symbolErrors, delay, taps };
 }
 
 export interface LinkResult {
@@ -79,9 +96,34 @@ export interface LinkResult {
   snrEstDb: number;
   /** Ideal Es/N0 for the configured Eb/N0, dB. */
   esN0dB: number;
+  /** 95% Wilson confidence interval of the frame BER. */
+  berCi: [number, number];
+  symbolErrors: number;
+  ser: number;
+  serTheory: number;
+  /** Noise density per complex sample, and std. dev. per real dimension. */
+  n0: number;
+  sigma: number;
+  dmin: number;
+  nTaps: number;
+  /** Residual ISI from RRC truncation, dB re. peak. */
+  isiDb: number;
+  /** Highest TX PSD level outside the occupied band, dB re. passband. */
+  stopbandDb: number;
+  /** Shannon capacity of the occupied band at this Es/N0, bit/s/Hz. */
+  capacity: number;
+  /** Shannon limit on Eb/N0 for eta = k bit/s/Hz (Nyquist-band signalling), dB. */
+  shannonLimitDb: number;
   psdTx: Psd;
   psdRx: Psd;
   eye: Float64Array[];
+}
+
+function stopbandLevelDb(psd: Psd, sps: number, beta: number): number {
+  const edge = (1 + beta) / 2 + 0.1; // a little beyond the band edge
+  let max = -Infinity;
+  for (let i = 0; i < psd.freq.length; i++) if (Math.abs(psd.freq[i] * sps) > edge) max = Math.max(max, psd.db[i]);
+  return max;
 }
 
 /** One frame through the link, plus every measurement the scopes need. */
@@ -89,6 +131,9 @@ export function simulateLink(p: LinkParams): LinkResult {
   const r = runCore(p);
   const nBits = p.nSym * r.c.k;
   const evm = evmPercent(r.rxSym, labelsToSymbols(r.labels, r.c));
+  const esN0dB = p.ebN0dB + 10 * Math.log10(r.c.k);
+  const n0 = n0FromEbN0(p.ebN0dB, r.c.k);
+  const psdTx = welchPsd(r.txWave, 512);
   return {
     params: p,
     constellation: r.c,
@@ -97,10 +142,22 @@ export function simulateLink(p: LinkParams): LinkResult {
     nBits,
     ber: r.bitErrors / nBits,
     berTheory: theoreticalBer(p.mod, p.ebN0dB),
+    berCi: wilsonInterval(r.bitErrors, nBits),
+    symbolErrors: r.symbolErrors,
+    ser: r.symbolErrors / p.nSym,
+    serTheory: theoreticalSer(p.mod, esN0dB),
     evmPct: evm,
     snrEstDb: snrFromEvmDb(evm),
-    esN0dB: p.ebN0dB + 10 * Math.log10(r.c.k),
-    psdTx: welchPsd(r.txWave, 512),
+    esN0dB,
+    n0,
+    sigma: Math.sqrt(n0 / 2),
+    dmin: minDistance(r.c),
+    nTaps: r.taps.length,
+    isiDb: residualIsiDb(r.taps, p.sps),
+    stopbandDb: stopbandLevelDb(psdTx, p.sps, p.beta),
+    capacity: capacityPerHz(esN0dB, p.beta),
+    shannonLimitDb: shannonEbN0LimitDb(r.c.k),
+    psdTx,
     psdRx: welchPsd(r.rxWave, 512),
     eye: eyeTraces(r.mf.re, r.delay, p.sps, p.nSym, 250),
   };

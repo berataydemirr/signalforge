@@ -15,6 +15,20 @@ export function evmPercent(rx: CVec, ref: CVec): number {
   return p === 0 ? 0 : 100 * Math.sqrt(e / p);
 }
 
+/**
+ * Wilson score interval for a binomial proportion k/n (default 95%).
+ * Well-behaved for small k, unlike the normal approximation.
+ */
+export function wilsonInterval(k: number, n: number, z = 1.959964): [number, number] {
+  if (n <= 0) return [0, 1];
+  const p = k / n;
+  const z2 = z * z;
+  const den = 1 + z2 / n;
+  const c = (p + z2 / (2 * n)) / den;
+  const h = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / den;
+  return [k === 0 ? 0 : Math.max(0, c - h), k === n ? 1 : Math.min(1, c + h)];
+}
+
 /** Decision-directed Es/N0 estimate from EVM: SNR = 1 / EVM^2 (valid when decisions are mostly correct). */
 export function snrFromEvmDb(evmPct: number): number {
   const e = evmPct / 100;

@@ -1,29 +1,34 @@
 import { useEffect, useMemo, useState } from 'react';
-import { LinkParams, simulateLink } from '../engine/link';
+import { LinkParams, LinkResult, simulateLink } from '../engine/link';
 import { Controls } from './Controls';
 import { StatsBar } from './StatsBar';
-import { readTheme } from './plot';
+import { LinkAnalysis } from './LinkAnalysis';
+import { fmtSci, readTheme } from './plot';
 import { useBerSweep } from './useBerSweep';
 import { paramsFromUrl, writeParamsToUrl } from './urlState';
 import { ConstellationScope } from './scopes/ConstellationScope';
 import { EyeScope } from './scopes/EyeScope';
 import { PsdScope } from './scopes/PsdScope';
+import { PulseScope } from './scopes/PulseScope';
 import { BerScope } from './scopes/BerScope';
 
 const DEFAULTS: LinkParams = { mod: '16qam', ebN0dB: 12, beta: 0.35, sps: 8, span: 10, nSym: 2000, seed: 1 };
-
 const REPO = 'https://github.com/berataydemirr/signalforge';
+const initial = paramsFromUrl(DEFAULTS);
 
-const CHAIN: Array<[string, boolean?]> = [
-  ['Random bits'],
-  ['Gray mapper'],
-  ['RRC pulse shaping'],
-  ['AWGN channel', true],
-  ['Matched RRC filter'],
-  ['Symbol sampler'],
-  ['Min-distance slicer'],
-  ['BER / EVM'],
-];
+function chain(res: LinkResult): Array<{ name: string; detail: string; channel?: boolean }> {
+  const { params: p, constellation: c } = res;
+  return [
+    { name: 'Bit source', detail: `PRBS, ${res.nBits} bits` },
+    { name: 'Mapper', detail: `${c.label}, Gray` },
+    { name: 'TX filter', detail: `RRC β=${p.beta.toFixed(2)}, ${res.nTaps} taps` },
+    { name: 'AWGN', detail: `Es/N0 ${res.esN0dB.toFixed(1)} dB`, channel: true },
+    { name: 'RX filter', detail: 'matched RRC' },
+    { name: 'Sampler', detail: `1/${p.sps}, delay ${p.span} T` },
+    { name: 'Slicer', detail: `min. distance, dmin ${res.dmin.toFixed(3)}` },
+    { name: 'Metrics', detail: `BER ${fmtSci(res.ber)}` },
+  ];
+}
 
 function prefersReducedMotion(): boolean {
   try {
@@ -32,8 +37,6 @@ function prefersReducedMotion(): boolean {
     return false;
   }
 }
-
-const initial = paramsFromUrl(DEFAULTS);
 
 export default function App() {
   const [params, setParams] = useState<LinkParams>(initial.params);
@@ -64,6 +67,7 @@ export default function App() {
     if (initial.autoSweep) sweep.start(initial.params.mod, initial.params.beta, initial.params.span);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   const update = (patch: Partial<LinkParams>) => setParams((p) => ({ ...p, ...patch }));
 
   const toggleTheme = () => {
@@ -81,28 +85,31 @@ export default function App() {
     <>
       <header className="topbar">
         <div className="brand">
-          <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+          <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
             <rect width="32" height="32" rx="7" fill="var(--surface-2)" />
             <path d="M4 16c3-9 5-9 8 0s5 9 8 0 5-9 8 0" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" />
           </svg>
           <h1>SignalForge</h1>
-          <span className="tag">End-to-end digital link lab, running in your browser</span>
+          <span className="tag">Digital communication link simulator</span>
         </div>
-        <span className="badge">M1 · baseband over AWGN</span>
+        <span className="badge">M1 · baseband, AWGN</span>
         <span className="spacer" />
-        <a href={REPO} target="_blank" rel="noreferrer">
-          GitHub
+        <a className="toplink" href={REPO} target="_blank" rel="noreferrer">
+          Source
         </a>
         <button className="icon-btn" onClick={toggleTheme} aria-label="Toggle light and dark theme">
-          {themeName === 'dark' ? '☀ Light' : '☾ Dark'}
+          {themeName === 'dark' ? 'Light' : 'Dark'}
         </button>
       </header>
 
       <nav className="chain" aria-label="Signal chain">
-        {CHAIN.map(([name, ch], i) => (
-          <span key={name} style={{ display: 'contents' }}>
-            {i > 0 && <span className="arrow">→</span>}
-            <span className={ch ? 'blk ch' : 'blk'}>{name}</span>
+        {chain(res).map((b, i) => (
+          <span key={b.name} className="chain-item">
+            {i > 0 && <span className="arrow" aria-hidden="true" />}
+            <span className={b.channel ? 'blk ch' : 'blk'}>
+              <span className="n">{b.name}</span>
+              <span className="d">{b.detail}</span>
+            </span>
           </span>
         ))}
       </nav>
@@ -121,6 +128,7 @@ export default function App() {
             <ConstellationScope res={res} theme={theme} />
             <EyeScope res={res} theme={theme} />
             <PsdScope res={res} theme={theme} />
+            <PulseScope res={res} theme={theme} />
             <BerScope
               res={res}
               theme={theme}
@@ -130,13 +138,14 @@ export default function App() {
               onStop={sweep.stop}
               onClear={sweep.clear}
             />
+            <LinkAnalysis res={res} />
           </div>
         </div>
       </main>
 
       <footer className="foot">
-        All DSP written from scratch in TypeScript: no signal-processing libraries. Simulated BER is checked against
-        closed-form theory in CI. <a href={REPO}>Source &amp; docs</a>.
+        Complex baseband, Es = 1, unit-energy RRC. DSP implemented from first principles in TypeScript; BER and SER
+        validated against closed-form results in CI. <a href={REPO}>Source</a>
       </footer>
     </>
   );
